@@ -1,6 +1,6 @@
 # cmp-bazel
 
-nvim-cmp source for bazel target completion.
+nvim-cmp source for bazel target completion and package files.
 
 # Setup
 
