@@ -9,7 +9,7 @@ source.new = function()
 end
 
 source.get_trigger_characters = function()
-    return {":", "/"}
+    return {":", "/", '"'}
 end
 
 source.is_available = function()
@@ -68,6 +68,17 @@ local function complete_package(package, items)
     )
 end
 
+local function complete_file(name, items)
+    table.insert(
+        items,
+        {
+            label = name,
+            insertText = name .. '",',
+            kind = cmp.lsp.CompletionItemKind.File
+        }
+    )
+end
+
 local function get_dir(target)
     local root_dir = vim.fn.getcwd()
     local index = string.find(target, "/[^/]*$")
@@ -77,11 +88,10 @@ local function get_dir(target)
     return root_dir .. "/" .. string.sub(target, 1, index)
 end
 
-source._complete_folders = function(_, target, callback)
-    local dirname = get_dir(target)
-    local fs, err = vim.loop.fs_scandir(dirname)
+source._complete = function(_, dir, cmp_callback, ft_callback)
+    local fs, err = vim.loop.fs_scandir(dir)
     if err then
-        return callback()
+        return cmp_callback()
     end
 
     local items = {}
@@ -89,7 +99,7 @@ source._complete_folders = function(_, target, callback)
     while true do
         local name, type, e = vim.loop.fs_scandir_next(fs)
         if e then
-            return callback()
+            return cmp_callback()
         end
         if not name then
             break
@@ -97,18 +107,27 @@ source._complete_folders = function(_, target, callback)
 
         -- Create items
         if is_not_hidden(name) then
-            if type == "directory" then
-                complete_dir(name, items)
-                if is_bazel_package(dirname, name) then
-                    complete_package(name, items)
-                end
+            ft_callback(dir, name, type, items)
+        end
+    end
+    cmp_callback(items)
+end
+
+source._complete_folders = function(self, label, cmp_callback)
+    local directory_callback = function(dir, name, type, items)
+        if type == "directory" then
+            complete_dir(name, items)
+            if is_bazel_package(dir, name) then
+                complete_package(name, items)
+            elseif type == 'file' then
+                complete_file(name, items)
             end
         end
     end
-    callback(items)
+    self:_complete(get_dir(label), cmp_callback, directory_callback)
 end
 
-source._complete_bazel_labels = function(_, target, callback)
+source._complete_bazel_labels = function(_, label, callback)
     Job:new(
         {
             "bazel",
@@ -116,7 +135,7 @@ source._complete_bazel_labels = function(_, target, callback)
             "--keep_going",
             "--noshow_progress",
             "--output=label",
-            "kind('rule', '//" .. target .. "*')",
+            "kind('rule', '//" .. label .. "*')",
             on_exit = function(job)
                 local result = job:result()
                 local items = {}
@@ -129,15 +148,48 @@ source._complete_bazel_labels = function(_, target, callback)
     ):start()
 end
 
-source.complete = function(self, params, callback)
-    local target = get_currently_typed_label(params.context.cursor_before_line)
-    if not target then
-        return callback()
+local function get_sub_dir_of_packages(bufnr, typed_text)
+    local buf_dir = vim.fn.expand(('#%d:p:h'):format(bufnr))
+    local index = string.find(typed_text, "/[^/]*$")
+    if not index then
+        return buf_dir
     end
-    if ends_with_colon(target) then
-        self:_complete_bazel_labels(target, callback)
+    return buf_dir .. "/" .. string.sub(typed_text, 1, index)
+end
+
+source._complete_package_files = function(self, text, bufnr, cmp_callback)
+    local files_callback = function(_, name, type, items)
+        if type == "directory" then
+            complete_dir(name, items)
+        elseif type == 'file' then
+            complete_file(name, items)
+        end
+    end
+    self:_complete(get_sub_dir_of_packages(bufnr, text), cmp_callback, files_callback)
+end
+
+local function quotation_mark_closed(text_after_first_quotation_mark)
+    return vim.regex('"'):match_str(text_after_first_quotation_mark)
+end
+
+local function get_text_after_first_quotation_mark(line)
+    local index = vim.regex('"'):match_str(line)
+    if not index then return nil end
+    return string.sub(line, index + 2)
+end
+
+source.complete = function(self, params, callback)
+    local text = get_text_after_first_quotation_mark(params.context.cursor_before_line)
+    if not text or quotation_mark_closed(text) then return callback() end
+
+    local label = get_currently_typed_label(params.context.cursor_before_line)
+    if not label then
+        return self:_complete_package_files(text, params.context.bufnr, callback)
+    end
+    if ends_with_colon(label) then
+        self:_complete_bazel_labels(label, callback)
     else
-        self:_complete_folders(target, callback)
+        self:_complete_folders(label, callback)
     end
 end
 
