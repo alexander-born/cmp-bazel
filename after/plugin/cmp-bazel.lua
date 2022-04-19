@@ -79,13 +79,28 @@ local function complete_file(name, items)
     )
 end
 
-local function get_dir(target)
-    local root_dir = vim.fn.getcwd()
+local function get_bazel_workspace(bufnr)
+    local buf_dir = vim.fn.expand(('#%d:p:h'):format(bufnr))
+    local workspace = buf_dir
+    while(1)
+    do
+        if(vim.fn.filereadable(workspace .. '/WORKSPACE') == 1) then
+            break
+        end
+        if(workspace == '/') then
+            return buf_dir
+        end
+        workspace = vim.fn.fnamemodify(workspace, ":h");
+    end
+    return workspace
+end
+
+local function get_dir(workspace, target)
     local index = string.find(target, "/[^/]*$")
     if not index or index < 2 then
-        return root_dir
+        return workspace
     end
-    return root_dir .. "/" .. string.sub(target, 1, index)
+    return workspace .. "/" .. string.sub(target, 1, index)
 end
 
 local function get_sub_dir_of_packages(bufnr, typed_text)
@@ -132,7 +147,7 @@ source._complete_from_filesystem = function(_, dir, cmp_callback, ft_callback)
     cmp_callback(items)
 end
 
-source._complete_directories = function(self, label, cmp_callback)
+source._complete_directories = function(self, workspace, label, cmp_callback)
     local directory_callback = function(dir, name, type, items)
         if type == "directory" then
             complete_dir(name, items)
@@ -141,7 +156,7 @@ source._complete_directories = function(self, label, cmp_callback)
             end
         end
     end
-    self:_complete_from_filesystem(get_dir(label), cmp_callback, directory_callback)
+    self:_complete_from_filesystem(get_dir(workspace, label), cmp_callback, directory_callback)
 end
 
 source._complete_package_files = function(self, text, bufnr, cmp_callback)
@@ -155,7 +170,7 @@ source._complete_package_files = function(self, text, bufnr, cmp_callback)
     self:_complete_from_filesystem(get_sub_dir_of_packages(bufnr, text), cmp_callback, files_callback)
 end
 
-source._complete_bazel_labels = function(_, label, callback)
+source._complete_bazel_labels = function(_, workspace, label, callback)
     Job:new(
         {
             "bazel",
@@ -164,6 +179,7 @@ source._complete_bazel_labels = function(_, label, callback)
             "--noshow_progress",
             "--output=label",
             "kind('rule', '//" .. label .. "*')",
+            cwd = workspace,
             on_exit = function(job)
                 local result = job:result()
                 local items = {}
@@ -184,10 +200,11 @@ source.complete = function(self, params, callback)
     if not label then
         return self:_complete_package_files(text, params.context.bufnr, callback)
     end
+    local workspace = get_bazel_workspace(params.context.bufnr)
     if ends_with_colon(label) then
-        self:_complete_bazel_labels(label, callback)
+        self:_complete_bazel_labels(workspace, label, callback)
     else
-        self:_complete_directories(label, callback)
+        self:_complete_directories(workspace, label, callback)
     end
 end
 
