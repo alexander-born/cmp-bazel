@@ -162,14 +162,29 @@ source._complete_package_files = function(self, text, bufnr, cmp_callback)
 	self:_complete_from_filesystem(get_sub_dir_of_packages(bufnr, text), cmp_callback, files_callback)
 end
 
+local function split_by_space(input)
+	local chunks = {}
+	for substring in input:gmatch("%S+") do
+		table.insert(chunks, substring)
+	end
+	return chunks
+end
+
 source._complete_bazel_labels = function(_, workspace, label, callback)
-	Job:new({
-		"bazel",
+	local command = split_by_space(vim.g.bazel_cmd or "bazel")
+	local args = {
 		"query",
 		"--keep_going",
 		"--noshow_progress",
 		"--output=label",
 		"kind('rule', '//" .. label .. "*')",
+	}
+	if #command > 1 then
+		args = vim.fn.extend({ select(2, unpack(command)) }, args)
+	end
+	Job:new({
+		command = command[1],
+		args = args,
 		cwd = workspace,
 		on_exit = function(job)
 			local result = job:result()
